@@ -1,5 +1,13 @@
 # discipline: standalone CD-ripping application
 
+## Current implementation authorization
+
+The user has authorized implementation and draft PR publication to the public `okuuva/discipline` repository.
+They subsequently requested separate, reviewable PRs instead of the single application change proposed below.
+The [PR delivery plan](pr-stack.md) supersedes the one-change boundary and the historical implementation/publication prohibitions in this document.
+The functional contract and exclusions below still apply.
+Host activation, real bot messages, hardware tests, shared-storage writes and library imports remain outside implementation authorization.
+
 ## Status and intent
 
 Discovery and planning only, focused on ripper replacement after [Q9's scope decision](cd-ripping-tool.questions.md#round-4-resolution).
