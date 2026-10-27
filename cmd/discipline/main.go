@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -8,12 +10,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/okuuva/discipline/internal/discipline"
 )
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "discipline:", err)
 		os.Exit(1)
 	}
@@ -24,8 +30,9 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	state := flags.String("state", "/var/lib/discipline", "private local state directory")
 	spool := flags.String("spool", "/srv/abcde", "private local attempt directory")
+	drive := flags.String("drive", "/dev/sr0", "one configured optical drive, for serve")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: discipline [--state DIR --spool DIR] jobs|show UUID|requests|retry UUID|cleanup UUID|new-insertion|reconcile UUID --outcome OUTCOME --note REASON --confirm")
+		fmt.Fprintln(stderr, "Usage: discipline [--state DIR --spool DIR] serve|jobs|show UUID|requests|retry UUID|cleanup UUID|new-insertion|reconcile UUID --outcome OUTCOME --note REASON --confirm")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -38,6 +45,12 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	if len(args) == 0 {
 		flags.Usage()
 		return errors.New("a command is required")
+	}
+	if args[0] == "serve" {
+		if len(args) != 1 {
+			return errors.New("unexpected serve arguments")
+		}
+		return discipline.Serve(ctx, discipline.ServiceConfig{State: *state, Spool: *spool, Drive: *drive, ABCDEConfig: os.Getenv("DISCIPLINE_ABCDE_CONFIG")})
 	}
 	var request discipline.Request
 	switch args[0] {

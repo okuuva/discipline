@@ -45,6 +45,8 @@ type Job struct {
 	Phase    Phase  `json:"phase"`
 	Outcome  Phase  `json:"outcome,omitempty"`
 	Error    string `json:"error,omitempty"`
+	DiscKey  string `json:"disc_key,omitempty"`
+	TOC      string `json:"toc,omitempty"`
 	Cleaned  bool   `json:"cleaned"`
 }
 
@@ -52,6 +54,7 @@ type Request struct {
 	ID       int64  `json:"id"`
 	JobID    string `json:"job_id,omitempty"`
 	Revision int64  `json:"revision"`
+	Phase    Phase  `json:"expected_phase,omitempty"`
 	Action   string `json:"action"`
 	Outcome  string `json:"outcome,omitempty"`
 	Note     string `json:"note,omitempty"`
@@ -200,7 +203,33 @@ func (s *Store) check(initialize bool, spool string) error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 1 {
+	if version == 1 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+			return err
+		}
+		if version == 1 {
+			if _, err := tx.Exec(`
+ALTER TABLE jobs ADD COLUMN disc_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN toc TEXT NOT NULL DEFAULT '';
+CREATE INDEX jobs_phase ON jobs(phase);
+ALTER TABLE requests ADD COLUMN phase TEXT NOT NULL DEFAULT '';
+UPDATE requests SET phase=COALESCE((SELECT phase FROM jobs WHERE jobs.id=requests.job_id), '');
+CREATE TABLE drive (id INTEGER PRIMARY KEY CHECK(id=1), kind TEXT NOT NULL, disc_key TEXT NOT NULL, job_id TEXT REFERENCES jobs(id));
+PRAGMA user_version = 2;`); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		version = 2
+	}
+	if version != 2 {
 		return fmt.Errorf("unsupported or incomplete state schema %d", version)
 	}
 	var integrity string
@@ -227,14 +256,21 @@ func (s *Store) check(initialize bool, spool string) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) CreateJob(ctx context.Context) (Job, error) {
+func newJobID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return Job{}, err
+		return "", err
 	}
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
-	id := fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
+}
+
+func (s *Store) CreateJob(ctx context.Context) (Job, error) {
+	id, err := newJobID()
+	if err != nil {
+		return Job{}, err
+	}
 	result, err := s.db.ExecContext(ctx, "INSERT INTO jobs(id, phase) VALUES (?, ?)", id, Queued)
 	if err != nil {
 		return Job{}, err
@@ -243,11 +279,11 @@ func (s *Store) CreateJob(ctx context.Context) (Job, error) {
 	return Job{ID: id, Sequence: seq, Phase: Queued}, err
 }
 
-const jobColumns = "id, sequence, revision, phase, outcome, error, cleaned"
+const jobColumns = "id, sequence, revision, phase, outcome, error, disc_key, toc, cleaned"
 
 func scanJob(row interface{ Scan(...any) error }) (Job, error) {
 	var j Job
-	err := row.Scan(&j.ID, &j.Sequence, &j.Revision, &j.Phase, &j.Outcome, &j.Error, &j.Cleaned)
+	err := row.Scan(&j.ID, &j.Sequence, &j.Revision, &j.Phase, &j.Outcome, &j.Error, &j.DiscKey, &j.TOC, &j.Cleaned)
 	return j, err
 }
 
@@ -342,7 +378,7 @@ func (s *Store) Enqueue(ctx context.Context, r Request) (Request, error) {
 		if r.JobID != "" {
 			return Request{}, errors.New("new-insertion does not accept a job")
 		}
-		r.Revision = 0
+		r.Revision, r.Phase = 0, ""
 	} else {
 		j, err := scanJob(tx.QueryRowContext(ctx, "SELECT "+jobColumns+" FROM jobs WHERE id = ?", r.JobID))
 		if err != nil {
@@ -351,9 +387,9 @@ func (s *Store) Enqueue(ctx context.Context, r Request) (Request, error) {
 		if !requestAllowed(j, r) {
 			return Request{}, ErrConflict
 		}
-		jobID, r.Revision = j.ID, j.Revision
+		jobID, r.Revision, r.Phase = j.ID, j.Revision, j.Phase
 	}
-	result, err := tx.ExecContext(ctx, "INSERT INTO requests(job_id, revision, action, outcome, note) VALUES (?, ?, ?, ?, ?)", jobID, r.Revision, r.Action, r.Outcome, r.Note)
+	result, err := tx.ExecContext(ctx, "INSERT INTO requests(job_id, revision, phase, action, outcome, note) VALUES (?, ?, ?, ?, ?, ?)", jobID, r.Revision, r.Phase, r.Action, r.Outcome, r.Note)
 	if err != nil {
 		return Request{}, err
 	}
@@ -366,7 +402,15 @@ func (s *Store) Enqueue(ctx context.Context, r Request) (Request, error) {
 }
 
 func (s *Store) Requests(ctx context.Context) ([]Request, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(job_id, ''), revision, action, outcome, note, status, result FROM requests ORDER BY id`)
+	return s.requests(ctx, "")
+}
+
+func (s *Store) requests(ctx context.Context, predicate string) ([]Request, error) {
+	query := `SELECT id, COALESCE(job_id, ''), revision, phase, action, outcome, note, status, result FROM requests`
+	if predicate != "" {
+		query += " WHERE " + predicate
+	}
+	rows, err := s.db.QueryContext(ctx, query+" ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +418,7 @@ func (s *Store) Requests(ctx context.Context) ([]Request, error) {
 	requests := []Request{}
 	for rows.Next() {
 		var r Request
-		if err := rows.Scan(&r.ID, &r.JobID, &r.Revision, &r.Action, &r.Outcome, &r.Note, &r.Status, &r.Result); err != nil {
+		if err := rows.Scan(&r.ID, &r.JobID, &r.Revision, &r.Phase, &r.Action, &r.Outcome, &r.Note, &r.Status, &r.Result); err != nil {
 			return nil, err
 		}
 		requests = append(requests, r)
