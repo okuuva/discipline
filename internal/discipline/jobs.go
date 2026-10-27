@@ -28,6 +28,8 @@ const (
 	Ripping        Phase = "ripping"
 	RipFailed      Phase = "rip-failed"
 	AwaitingReview Phase = "awaiting-review"
+	EditingCover   Phase = "editing-cover"
+	Approved       Phase = "approved"
 	Finalizing     Phase = "finalizing"
 	FinalizeFailed Phase = "finalize-failed"
 	Ready          Phase = "ready"
@@ -223,13 +225,32 @@ CREATE TABLE drive (id INTEGER PRIMARY KEY CHECK(id=1), kind TEXT NOT NULL, disc
 PRAGMA user_version = 2;`); err != nil {
 				return err
 			}
+			version = 2
 		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		version = 2
 	}
-	if version != 2 {
+	if version == 2 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+			return err
+		}
+		if version == 2 {
+			if _, err := tx.Exec(reviewSchema); err != nil {
+				return err
+			}
+			version = 3
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if version != 3 {
 		return fmt.Errorf("unsupported or incomplete state schema %d", version)
 	}
 	var integrity string
@@ -316,7 +337,7 @@ func (s *Store) Jobs(ctx context.Context) ([]Job, error) {
 func (s *Store) Transition(ctx context.Context, j Job, next Phase, message string) (Job, error) {
 	allowed := map[Phase][]Phase{
 		Queued: {Ripping, Abandoned}, Ripping: {AwaitingReview, RipFailed},
-		RipFailed: {Ripping, Abandoned}, AwaitingReview: {Finalizing, Abandoned},
+		RipFailed: {Ripping, Abandoned}, AwaitingReview: {EditingCover, Approved, Abandoned}, EditingCover: {AwaitingReview}, Approved: {Finalizing, Abandoned},
 		Finalizing: {Ready, FinalizeFailed}, FinalizeFailed: {Finalizing, Abandoned},
 		Ready: {Copying, Abandoned}, Copying: {Published, Uncertain},
 		Published: {Cleaning}, Abandoned: {Cleaning},
@@ -355,7 +376,7 @@ func requestAllowed(j Job, r Request) bool {
 			return false
 		}
 		if r.Outcome == "abandoned" {
-			return j.Phase == Queued || j.Phase == RipFailed || j.Phase == AwaitingReview || j.Phase == FinalizeFailed || j.Phase == Ready || j.Phase == Uncertain
+			return j.Phase == Queued || j.Phase == RipFailed || j.Phase == AwaitingReview || j.Phase == Approved || j.Phase == FinalizeFailed || j.Phase == Ready || j.Phase == Uncertain
 		}
 		return j.Phase == Uncertain && (r.Outcome == "published" || r.Outcome == "not-published")
 	}

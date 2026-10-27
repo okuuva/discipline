@@ -19,6 +19,7 @@ import (
 
 type ServiceConfig struct {
 	State, Spool, Drive, ABCDEConfig string
+	Telegram                         TelegramConfig
 }
 
 func Serve(ctx context.Context, cfg ServiceConfig) (result error) {
@@ -28,6 +29,11 @@ func Serve(ctx context.Context, cfg ServiceConfig) (result error) {
 	if !filepath.IsAbs(cfg.Drive) || cfg.ABCDEConfig == "" {
 		return errors.New("serve requires an absolute drive path and the packaged abcde configuration")
 	}
+	bot, err := newTelegram(cfg.Telegram)
+	if err != nil {
+		return err
+	}
+	defer bot.client.CloseIdleConnections()
 	s, err := OpenStore(cfg.State, cfg.Spool, true)
 	if err != nil {
 		return err
@@ -47,6 +53,9 @@ func Serve(ctx context.Context, cfg ServiceConfig) (result error) {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	reviewDone := make(chan error, 1)
+	go func() { reviewDone <- s.runReview(ctx, bot, cfg.Spool, lease) }()
+	defer func() { cancel(); result = errors.Join(result, <-reviewDone) }()
 	var mu sync.Mutex
 	var current Disc
 	wake := make(chan struct{}, 1)
@@ -70,7 +79,12 @@ func Serve(ctx context.Context, cfg ServiceConfig) (result error) {
 			return nil
 		})
 	}()
-	defer func() { cancel(); <-monitorDone }()
+	defer func() {
+		cancel()
+		if err := <-monitorDone; err != ctx.Err() {
+			result = errors.Join(result, err)
+		}
+	}()
 	// The ticker services local operator requests, not failed extraction retries.
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -86,8 +100,11 @@ func Serve(ctx context.Context, cfg ServiceConfig) (result error) {
 		select {
 		case <-ctx.Done():
 			return nil
+		case err := <-reviewDone:
+			reviewDone <- nil
+			return err
 		case err := <-monitorDone:
-			monitorDone <- err
+			monitorDone <- nil
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return nil
 			}
@@ -211,6 +228,9 @@ func extract(ctx context.Context, cfg ServiceConfig, j Job, lease *os.File) erro
 		return err
 	}
 	if err := flushTree(attempt); err != nil {
+		return err
+	}
+	if err := syncPath(cfg.Spool); err != nil {
 		return err
 	}
 	for _, dir := range []string{"home", "scratch", "media", "tmp"} {

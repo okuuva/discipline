@@ -196,7 +196,7 @@ func TestDriveAcceptsOneRetryAtATime(t *testing.T) {
 func TestDriveLeavesReviewRequestsPending(t *testing.T) {
 	s, _, _ := testStore(t)
 	j := job(t, s)
-	for _, phase := range []Phase{Ripping, AwaitingReview, Finalizing, FinalizeFailed} {
+	for _, phase := range []Phase{Ripping, AwaitingReview, Approved, Finalizing, FinalizeFailed} {
 		j = step(t, s, j, phase)
 	}
 	r, err := s.Enqueue(context.Background(), Request{JobID: j.ID, Action: "retry"})

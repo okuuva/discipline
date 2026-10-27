@@ -117,7 +117,7 @@ func TestClaimsAcrossConnections(t *testing.T) {
 func TestPublishedReceiptCannotBeReset(t *testing.T) {
 	s, _, _ := testStore(t)
 	j := job(t, s)
-	for _, phase := range []Phase{Ripping, AwaitingReview, Finalizing, Ready, Copying, Published} {
+	for _, phase := range []Phase{Ripping, AwaitingReview, Approved, Finalizing, Ready, Copying, Published} {
 		j = step(t, s, j, phase)
 	}
 	for _, phase := range []Phase{Queued, Ripping, Ready, Copying, Abandoned} {
@@ -144,7 +144,7 @@ func TestCleanupClaimRetainsReceiptAcrossRestart(t *testing.T) {
 			s, state, spool := testStore(t)
 			j := job(t, s)
 			if terminal == Published {
-				for _, phase := range []Phase{Ripping, AwaitingReview, Finalizing, Ready, Copying} {
+				for _, phase := range []Phase{Ripping, AwaitingReview, Approved, Finalizing, Ready, Copying} {
 					j = step(t, s, j, phase)
 				}
 			}
@@ -166,7 +166,7 @@ func TestCleanupClaimRetainsReceiptAcrossRestart(t *testing.T) {
 func TestUncertainCopyRequiresAuditedReconciliation(t *testing.T) {
 	s, _, _ := testStore(t)
 	j := job(t, s)
-	for _, phase := range []Phase{Ripping, AwaitingReview, Finalizing, Ready, Copying, Uncertain} {
+	for _, phase := range []Phase{Ripping, AwaitingReview, Approved, Finalizing, Ready, Copying, Uncertain} {
 		j = step(t, s, j, phase)
 	}
 	for _, r := range []Request{

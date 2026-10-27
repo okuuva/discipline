@@ -39,6 +39,16 @@ func TestCommandsOnlyQueueRecovery(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &jobs); err != nil || len(jobs) != 1 || jobs[0].ID != j.ID {
 		t.Fatalf("jobs: %s %v", &out, err)
 	}
+	if err := runCommand("show", j.ID); err != nil {
+		t.Fatal(err)
+	}
+	var view struct {
+		Job       discipline.Job `json:"job"`
+		LocalPath string         `json:"local_path"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &view); err != nil || view.Job.ID != j.ID || view.LocalPath != filepath.Join(spool, j.ID) {
+		t.Fatalf("show: %s %v", &out, err)
+	}
 	if err := runCommand("reconcile", j.ID, "--outcome", "abandoned", "--note", "unwanted disc"); err == nil {
 		t.Fatal("reconciled without confirmation")
 	}
@@ -56,7 +66,7 @@ func TestCommandsOnlyQueueRecovery(t *testing.T) {
 	if err := runCommand("requests"); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"show"}, {"jobs", "extra"}, {"wat"}, {"new-insertion", j.ID}, {"show", "../../etc/passwd"}} {
+	for _, args := range [][]string{{"show"}, {"jobs", "extra"}, {"wat"}, {"new-insertion", j.ID}, {"show", "../../etc/passwd"}, {"--telegram-user", "0", "jobs"}, {"--telegram-user", "invalid", "jobs"}} {
 		if err := runCommand(args...); err == nil {
 			t.Fatalf("accepted invalid command: %v", args)
 		}
