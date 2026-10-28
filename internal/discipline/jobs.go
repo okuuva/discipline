@@ -33,6 +33,8 @@ const (
 	Finalizing     Phase = "finalizing"
 	FinalizeFailed Phase = "finalize-failed"
 	Ready          Phase = "ready"
+	CopyFailed     Phase = "copy-failed"
+	Superseded     Phase = "superseded"
 	Copying        Phase = "copying"
 	Uncertain      Phase = "uncertain"
 	Published      Phase = "published"
@@ -250,7 +252,26 @@ PRAGMA user_version = 2;`); err != nil {
 			return err
 		}
 	}
-	if version != 3 {
+	if version == 3 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+			return err
+		}
+		if version == 3 {
+			if _, err := tx.Exec(publishSchema); err != nil {
+				return err
+			}
+			version = 4
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if version != 4 {
 		return fmt.Errorf("unsupported or incomplete state schema %d", version)
 	}
 	var integrity string
@@ -339,7 +360,7 @@ func (s *Store) Transition(ctx context.Context, j Job, next Phase, message strin
 		Queued: {Ripping, Abandoned}, Ripping: {AwaitingReview, RipFailed},
 		RipFailed: {Ripping, Abandoned}, AwaitingReview: {EditingCover, Approved, Abandoned}, EditingCover: {AwaitingReview}, Approved: {Finalizing, Abandoned},
 		Finalizing: {Ready, FinalizeFailed}, FinalizeFailed: {Finalizing, Abandoned},
-		Ready: {Copying, Abandoned}, Copying: {Published, Uncertain},
+		Ready: {Copying, Abandoned}, Copying: {Published, CopyFailed, Uncertain},
 		Published: {Cleaning}, Abandoned: {Cleaning},
 	}
 	valid := false
@@ -368,7 +389,7 @@ WHERE id = ? AND revision = ? AND phase = ? AND cleaned = 0`, next, outcome, mes
 func requestAllowed(j Job, r Request) bool {
 	switch r.Action {
 	case "retry":
-		return j.Phase == RipFailed || j.Phase == FinalizeFailed
+		return j.Phase == RipFailed || j.Phase == FinalizeFailed || j.Phase == CopyFailed
 	case "cleanup":
 		return !j.Cleaned && (j.Phase == Published || j.Phase == Abandoned)
 	case "reconcile":
@@ -376,7 +397,7 @@ func requestAllowed(j Job, r Request) bool {
 			return false
 		}
 		if r.Outcome == "abandoned" {
-			return j.Phase == Queued || j.Phase == RipFailed || j.Phase == AwaitingReview || j.Phase == Approved || j.Phase == FinalizeFailed || j.Phase == Ready || j.Phase == Uncertain
+			return j.Phase == Queued || j.Phase == RipFailed || j.Phase == AwaitingReview || j.Phase == Approved || j.Phase == FinalizeFailed || j.Phase == Ready || j.Phase == CopyFailed || j.Phase == Superseded || j.Phase == Uncertain
 		}
 		return j.Phase == Uncertain && (r.Outcome == "published" || r.Outcome == "not-published")
 	}

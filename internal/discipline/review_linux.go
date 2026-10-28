@@ -331,12 +331,20 @@ func (s *Store) runReview(ctx context.Context, bot *telegram, spool string, leas
 			cancel()
 		}
 	}()
+	noticesDone := make(chan error, 1)
+	go func() {
+		err := s.runPublicationNotices(ctx, bot)
+		noticesDone <- err
+		if err != nil {
+			cancel()
+		}
+	}()
 	defer func() {
 		cancel()
 		if result == ctx.Err() {
 			result = nil
 		}
-		result = errors.Join(result, <-finalDone)
+		result = errors.Join(result, <-finalDone, <-noticesDone)
 	}()
 	for ctx.Err() == nil {
 		worked, err := s.prepareArtwork(ctx, spool, lease)

@@ -86,26 +86,16 @@ func mediaInventory(root string) ([]FileEntry, error) {
 }
 
 func mediaManifest(root string) ([]FileEntry, error) {
-	entries, err := mediaInventory(root)
+	dir, err := openDirectory(root)
 	if err != nil {
 		return nil, err
 	}
-	for i, entry := range entries {
-		f, err := os.Open(filepath.Join(root, entry.Path))
-		if err != nil {
-			return nil, err
-		}
-		hash := sha256.New()
-		n, readErr := io.Copy(hash, f)
-		if err := errors.Join(readErr, f.Close()); err != nil {
-			return nil, err
-		}
-		if n != entry.Size {
-			return nil, errors.New("media file changed during hashing")
-		}
-		entries[i].SHA256 = fmt.Sprintf("%x", hash.Sum(nil))
+	defer dir.Close()
+	entries, err := pinnedManifest(dir)
+	if err == nil && len(entries) == 0 {
+		err = errors.New("empty media manifest")
 	}
-	return entries, nil
+	return entries, err
 }
 
 func finalize(ctx context.Context, attempt string, j Job, r Review, lease *os.File) ([]FileEntry, error) {

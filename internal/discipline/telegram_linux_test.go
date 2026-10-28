@@ -384,6 +384,155 @@ func TestFailedPreviewDoesNotBlockUpdatesOrOtherJobs(t *testing.T) {
 	}
 }
 
+func TestPublicationNoticeMustSucceedBeforeAutomaticCleanup(t *testing.T) {
+	s, _, spool := testStore(t)
+	j := readyPublication(t, s, spool, Disc{Kind: "audio", Offsets: []int{150}, Leadout: 450})
+	j, err := s.claimPublication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishPublication(context.Background(), j, nil); err != nil {
+		t.Fatal(err)
+	}
+	var failing atomic.Bool
+	failing.Store(true)
+	bot := testBot(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		text, _ := payload["text"].(string)
+		if !strings.Contains(text, j.ID) || !strings.Contains(text, "transfer complete") || strings.Contains(text, spool) {
+			t.Error("wrong publication notice", text)
+		}
+		if failing.Load() {
+			http.Error(w, "temporary failure", 503)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":1}}`)
+	})
+	if err := s.notifyPublication(context.Background(), bot); err == nil {
+		t.Fatal("notification failure lost")
+	}
+	if _, err := s.claimCleanup(context.Background(), false); err == nil {
+		t.Fatal("deleted before notifying")
+	}
+	failing.Store(false)
+	if _, err := s.db.Exec("UPDATE publications SET notify_after=0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.notifyPublication(context.Background(), bot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.claimCleanup(context.Background(), false); err != nil {
+		t.Fatal("successful notice did not release cleanup", err)
+	}
+}
+
+func TestDelayedOldReceiptCannotAdvertiseNewerPartialInbox(t *testing.T) {
+	s, _, spool := testStore(t)
+	disc := Disc{Kind: "audio", Offsets: []int{150}, Leadout: 450}
+	old := readyPublication(t, s, spool, disc)
+	claim, err := s.claimPublication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishPublication(context.Background(), claim, nil); err != nil {
+		t.Fatal(err)
+	}
+	readyPublication(t, s, spool, disc)
+	claim, err = s.claimPublication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishPublication(context.Background(), claim, fmt.Errorf("partial newer copy")); err != nil {
+		t.Fatal(err)
+	}
+	bot := testBot(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		text, _ := payload["text"].(string)
+		if !strings.Contains(text, old.ID) || !strings.Contains(text, "historical") || strings.Contains(text, "ready for manual import") {
+			t.Error("old receipt advertised a partial current destination", text)
+		}
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	})
+	if err := s.notifyPublication(context.Background(), bot); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStalledPublicationNoticeDoesNotDelayReview(t *testing.T) {
+	s, _, spool := testStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	readyPublication(t, s, spool, Disc{Kind: "audio", Offsets: []int{150}, Leadout: 450})
+	claim, err := s.claimPublication(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishPublication(ctx, claim, nil); err != nil {
+		t.Fatal(err)
+	}
+	pending := pendingReview(t, s)
+	review := fakeCandidate(t, s, pending)
+	if err := s.rememberPreview(ctx, 42, 100, review); err != nil {
+		t.Fatal(err)
+	}
+	stalled := make(chan struct{})
+	approved := make(chan struct{}, 1)
+	var sent atomic.Bool
+	bot := testBot(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		r.Body.Close()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
+			close(stalled)
+			<-r.Context().Done()
+		case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+			select {
+			case <-stalled:
+			case <-r.Context().Done():
+				return
+			}
+			if !sent.Swap(true) {
+				update := tgUpdate{ID: 1, Callback: &tgCallback{ID: "approve-during-notice", From: tgUser{ID: 7}, Message: &tgMessage{ID: 100, Chat: tgChat{ID: 42}}, Data: "Owned"}}
+				json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []tgUpdate{update}})
+			} else {
+				fmt.Fprint(w, `{"ok":true,"result":[]}`)
+			}
+		default:
+			fmt.Fprint(w, `{"ok":true,"result":true}`)
+			select {
+			case approved <- struct{}{}:
+			default:
+			}
+		}
+	})
+	done := make(chan error, 1)
+	go func() { done <- s.runReview(ctx, bot, spool, nil) }()
+	select {
+	case <-approved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled publication notice blocked approval polling")
+	}
+	got, err := s.Review(ctx, pending.ID)
+	if err != nil || got.Category != "Owned" {
+		t.Fatal(got, err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("notice worker did not stop")
+	}
+}
+
 func TestCandidateMetadataUsesChosenRelease(t *testing.T) {
 	attempt := t.TempDir()
 	root := filepath.Join(attempt, "scratch", "abcde.fixture")

@@ -1,6 +1,6 @@
 { lib, buildGoModule, pkg-config, systemd, abcde, makeWrapper, writeShellScriptBin
 , coreutils, bash, gnused, gnugrep, gawk, findutils, which, cddiscid, cdparanoia
-, lame, rsgain, python3Packages, util-linux, inetutils, curl, imagemagick, ffmpeg-headless }:
+, lame, rsgain, python3Packages, util-linux, inetutils, curl, imagemagick, ffmpeg-headless, rsync }:
 
 let
   patchedAbcde = abcde.overrideAttrs (old: {
@@ -20,7 +20,7 @@ let
   '';
   runtime = [ patchedAbcde musicbrainz coreutils bash gnused gnugrep gawk findutils
     which cddiscid cdparanoia lame rsgain python3Packages.eyed3 util-linux inetutils
-    curl imagemagick ffmpeg-headless ];
+    curl imagemagick ffmpeg-headless rsync ];
 in
 buildGoModule {
   pname = "discipline";

@@ -248,6 +248,15 @@ SELECT 1 FROM reviews WHERE job_id=? AND revision=? AND cover!='' AND digest!=''
 		if _, err := tx.ExecContext(ctx, "UPDATE reviews SET category=? WHERE job_id=?", category, id); err != nil {
 			return false, err
 		}
+		var key string
+		var sequence int64
+		if err := tx.QueryRowContext(ctx, "SELECT disc_key,sequence FROM jobs WHERE id=?", id).Scan(&key, &sequence); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO destinations(category,disc_key,sequence) VALUES(?,?,?)
+ON CONFLICT(category,disc_key) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)`, category, key, sequence); err != nil {
+			return false, err
+		}
 		outcome = "approved " + category
 	}
 	if err := recordUpdate(ctx, tx, update, id, outcome); err != nil {
