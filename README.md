@@ -6,10 +6,10 @@ Final library import stays manual.
 
 ## Development status
 
-This first change provides local job storage, recovery request commands and the Go/Nix build.
-It does not yet run extraction, Telegram or publication workers.
-Queued requests remain queued until their owning worker is implemented.
-Do not deploy this intermediate package as a working ripper.
+The package now provides local job storage, a single-drive extraction service and recovery requests.
+Telegram review, publication and NixOS activation follow in dependent PRs.
+Artwork retrieval stays disabled until the bounded review pipeline is installed.
+Do not deploy this intermediate package as the complete ripper.
 
 See the [delivery plan](docs/plans/pr-stack.md) for the five PRs and the [functional contract](docs/plans/cd-ripping-tool.md) for safety and rollout requirements.
 
@@ -25,8 +25,11 @@ go test -race ./...
 ```
 
 The package check also runs gofmt validation and go vet.
-Nix pins the toolchain and dependency closure; CGO supplies the SQLite driver.
-No host-installed media tools or interactive shell configuration are used by this foundation.
+Nix pins the toolchain, libudev/SQLite CGO dependencies and media executables.
+Tests start and drain a real libudev monitor without accessing optical hardware.
+Pinned-abcde fixtures use a synthetic WAV and stubbed disc reader, but real LAME, eyeD3 and rsgain.
+They check unknown-disc extraction, processing evidence, failed gain, single-track identification and metadata quoting.
+No host-installed media tools or interactive shell configuration are used.
 
 ## Local state commands
 
@@ -48,7 +51,10 @@ The CLI will not initialize missing state.
 Commands return JSON.
 `jobs` and `show` expose phase, revision, last error, cleanup status and permitted recovery actions.
 `requests` distinguishes queued requests from completed work.
-Mutating commands record intent, never change a job's phase or perform filesystem cleanup themselves.
+Mutating CLI commands record intent, never change a job's phase or perform filesystem cleanup themselves.
+The running extraction service processes rip retries and explicit new-insertion requests.
+Other requests wait for their owning workers in later PRs.
+A completed retry request means the worker accepted the retry, not that audio processing succeeded.
 Conflicting requests are rejected while an earlier request is queued.
 Workers must atomically recheck the recorded revision and their file ownership before executing a request.
 
@@ -75,4 +81,35 @@ The beets backup does not back up discipline state.
 
 Filesystem configuration and private ancestor directories are trusted administrative inputs.
 The application does not protect against another process running as the same service user rewriting its state.
-No command in this foundation reads NFS, contacts Telegram or opens the beets database.
+No command in this package reads NFS, contacts Telegram or opens the beets database.
+
+## Extraction service
+
+`discipline --drive /dev/sr0 serve` runs the one-drive service in the foreground.
+This command accesses real hardware; run it only during an authorized hardware check with competing drive handlers stopped.
+It initializes only empty private local state/spool directories and takes a lifetime local drive lock.
+Its media subprocesses inherit the lock.
+The packaged abcde configuration gives each attempt its own HOME, temporary directory, scratch and output directories.
+MusicBrainz lookups have a deadline; absent metadata produces an unknown-disc rip rather than a prompt.
+
+The service subscribes to libudev before taking a stable startup sample.
+Repeated events and restarts with the same loaded disc reuse the recorded insertion.
+Observed removal/reinsertion creates a new attempt, even for the same TOC.
+Offline removal/reinsertion of the same disc requires `new-insertion` because it cannot be observed retrospectively.
+Data-only media is ignored; mixed-mode CDs are held as unsupported.
+A TOC fingerprint describes a layout, not the physical disc or a hash of its audio.
+
+Extraction never automatically retries a failure.
+Explicit retry requires the matching disc and preserves that attempt's scratch/output.
+The service requires track-level read/encode/tag/move evidence, successful gain, no recorded errors and decodable MP3s before marking audio ready for review.
+A zero abcde exit status is not enough.
+Successful processing ejects only the same observed insertion; failures retain it and the local output.
+The worker pins the drive descriptor and locks the tray before claiming an extraction.
+Its `BLKGETDISKSEQ` media generation must match the reconciled libudev observation, even if the replacement CD has an identical TOC.
+The tray remains locked through processing; ejection uses that pinned descriptor and the same insertion identity.
+Devices without the required tray-lock and disk-generation ioctls fail closed and require a hardware compatibility decision before deployment.
+
+Shutdown cancels the media process group and waits for its children to exit before releasing file ownership.
+An uninterruptible device operation can delay shutdown; do not bypass the lock to start a competing extractor.
+The pinned backend retains the homeslab single-track fix and additionally quotes metadata fields that abcde evaluates as shell assignments.
+Real device permissions, ejection, drive calibration, media parity and playback remain rollout checks, not claims established by synthetic fixtures.

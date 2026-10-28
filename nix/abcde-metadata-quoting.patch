@@ -1,0 +1,28 @@
+abcde evaluates cddb-tool's output. Quote the remaining metadata fields as
+shell data, matching the escaping already used for artist/album/track names.
+Verified against the pinned abcde 2.9.3 source with a DYEAR command substitution.
+
+--- a/cddb-tool
++++ b/cddb-tool
+@@ -152,14 +152,18 @@
+ 	fi
+ 	CDGENRE=$(grep -a '^DGENRE=' "$CDDBFILE" | cut -f2- -d= | tr -d \[:cntrl:\])
+ 
++	shellquote ()
++	{
++		printf '%s' "$1" | sed 's,\\,\\\\,g;s,\([\"\$\`]\),\\\1,g'
++	}
+ 	set +e
+-	echo DISCID="\"$DISCID\""
++	echo DISCID="\"$(shellquote "$DISCID")\""
+ 	echo DALBUM="\"$DALBUM\""
+ 	echo DARTIST="\"$DARTIST\""
+-	echo CDDBGENRE="\"$CDDBGENRE\""
+-	echo CDYEAR="\"$CDYEAR\""
+-	echo CDGENRE="\"$CDGENRE\""
++	echo CDDBGENRE="\"$(shellquote "$CDDBGENRE")\""
++	echo CDYEAR="\"$(shellquote "$CDYEAR")\""
++	echo CDGENRE="\"$(shellquote "$CDGENRE")\""
+ 	NUMTRACKS=$(grep -a -E '^TTITLE[0-9]+=' "$CDDBFILE" | wc -l)
+ 	CURRTRACK=0
+ 	while [ "$CURRTRACK" -lt $NUMTRACKS ]; do

@@ -1,0 +1,15 @@
+Preserve the homeslab single-track fix from
+nix-config/hosts/nixos/homeslab/media/music/abcde-musicbrainz-single-track.patch.
+Five discinfo values have a last array index of four in Perl.
+
+--- a/abcde-musicbrainz-tool
++++ b/abcde-musicbrainz-tool
+@@ -302,7 +302,7 @@
+     # Calculate MusicBrainz ID from disc offsets; see
+     # https://musicbrainz.org/doc/DiscIDCalculation
+ 
+-    if ($#discinfo < 5) {
++    if ($#discinfo < 4) {
+ 	print STDERR "Insufficient or missing discinfo data.\n";
+ 	exit(1);
+     }
