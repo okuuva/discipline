@@ -1,6 +1,6 @@
 { lib, buildGoModule, pkg-config, systemd, abcde, makeWrapper, writeShellScriptBin
 , coreutils, bash, gnused, gnugrep, gawk, findutils, which, cddiscid, cdparanoia
-, lame, rsgain, python3Packages, util-linux, inetutils }:
+, lame, rsgain, python3Packages, util-linux, inetutils, curl, imagemagick, ffmpeg-headless }:
 
 let
   patchedAbcde = abcde.overrideAttrs (old: {
@@ -19,7 +19,8 @@ let
     exit "$result"
   '';
   runtime = [ patchedAbcde musicbrainz coreutils bash gnused gnugrep gawk findutils
-    which cddiscid cdparanoia lame rsgain python3Packages.eyed3 util-linux inetutils ];
+    which cddiscid cdparanoia lame rsgain python3Packages.eyed3 util-linux inetutils
+    curl imagemagick ffmpeg-headless ];
 in
 buildGoModule {
   pname = "discipline";
@@ -34,19 +35,21 @@ buildGoModule {
 
   checkPhase = ''
     runHook preCheck
+    export MAGICK_CONFIGURE_PATH=${../data/image-policy}
     export DISCIPLINE_TEST_ABCDE=${patchedAbcde}/bin/abcde
     export DISCIPLINE_TEST_CDDB=${patchedAbcde}/bin/cddb-tool
     export DISCIPLINE_TEST_MUSICBRAINZ=${patchedAbcde}/bin/abcde-musicbrainz-tool
     test -z "$(gofmt -l cmd internal)"
     go vet ./...
-    go test -race ./...
+    go test -race -timeout 2m ./...
     runHook postCheck
   '';
 
   postInstall = ''
     wrapProgram $out/bin/discipline \
       --prefix PATH : ${lib.makeBinPath runtime} \
-      --set DISCIPLINE_ABCDE_CONFIG ${../data/abcde.conf}
+      --set DISCIPLINE_ABCDE_CONFIG ${../data/abcde.conf} \
+      --set MAGICK_CONFIGURE_PATH ${../data/image-policy}
   '';
 
   meta = {

@@ -103,12 +103,16 @@ func flushTree(root string) error {
 		if !entry.IsDir() && !entry.Type().IsRegular() {
 			return fmt.Errorf("unexpected attempt entry: %s", path)
 		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		return errors.Join(f.Sync(), f.Close())
+		return syncPath(path)
 	})
+}
+
+func syncPath(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }
 
 func storedDisc(j Job) (Disc, error) {

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,6 +12,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/okuuva/discipline/internal/discipline"
@@ -31,6 +34,21 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	state := flags.String("state", "/var/lib/discipline", "private local state directory")
 	spool := flags.String("spool", "/srv/abcde", "private local attempt directory")
 	drive := flags.String("drive", "/dev/sr0", "one configured optical drive, for serve")
+	credential := ""
+	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
+		credential = filepath.Join(dir, "telegram-token")
+	}
+	token := flags.String("telegram-token-file", credential, "private bot token file; defaults to the systemd credential")
+	chat := flags.Int64("telegram-chat", 0, "allowed Telegram chat ID, for serve")
+	var users []int64
+	flags.Func("telegram-user", "allowed Telegram user ID; repeat for each user", func(value string) error {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id <= 0 {
+			return errors.New("telegram-user must be a positive numeric ID")
+		}
+		users = append(users, id)
+		return nil
+	})
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: discipline [--state DIR --spool DIR] serve|jobs|show UUID|requests|retry UUID|cleanup UUID|new-insertion|reconcile UUID --outcome OUTCOME --note REASON --confirm")
 		flags.PrintDefaults()
@@ -50,7 +68,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 		if len(args) != 1 {
 			return errors.New("unexpected serve arguments")
 		}
-		return discipline.Serve(ctx, discipline.ServiceConfig{State: *state, Spool: *spool, Drive: *drive, ABCDEConfig: os.Getenv("DISCIPLINE_ABCDE_CONFIG")})
+		return discipline.Serve(ctx, discipline.ServiceConfig{State: *state, Spool: *spool, Drive: *drive, ABCDEConfig: os.Getenv("DISCIPLINE_ABCDE_CONFIG"), Telegram: discipline.TelegramConfig{TokenFile: *token, ChatID: *chat, Users: users}})
 	}
 	var request discipline.Request
 	switch args[0] {
@@ -93,7 +111,23 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	case "jobs":
 		value, err = store.Jobs(ctx)
 	case "show":
-		value, err = store.Job(ctx, args[1])
+		var j discipline.Job
+		j, err = store.Job(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		var review *discipline.Review
+		r, reviewErr := store.Review(ctx, j.ID)
+		if reviewErr == nil {
+			review = &r
+		} else if !errors.Is(reviewErr, sql.ErrNoRows) {
+			return reviewErr
+		}
+		value = struct {
+			Job       discipline.Job     `json:"job"`
+			Review    *discipline.Review `json:"review,omitempty"`
+			LocalPath string             `json:"local_path"`
+		}{j, review, filepath.Join(*spool, j.ID)}
 	case "requests":
 		value, err = store.Requests(ctx)
 	default:
