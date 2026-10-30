@@ -33,6 +33,10 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	state := flags.String("state", "/var/lib/discipline", "private local state directory")
 	spool := flags.String("spool", "/srv/abcde", "private local attempt directory")
+	mount := flags.String("media-mount", "/mnt/media", "expected NFS mount, for publish")
+	source := flags.String("media-source", "", "exact expected NFS source, for publish")
+	ready := flags.String("storage-ready", "/run/beets-storage-ready", "storage readiness marker, for publish")
+	keep := flags.Bool("keep-local", false, "retain local data after publication")
 	drive := flags.String("drive", "/dev/sr0", "one configured optical drive, for serve")
 	credential := ""
 	if dir := os.Getenv("CREDENTIALS_DIRECTORY"); dir != "" {
@@ -50,7 +54,7 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 		return nil
 	})
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: discipline [--state DIR --spool DIR] serve|jobs|show UUID|requests|retry UUID|cleanup UUID|new-insertion|reconcile UUID --outcome OUTCOME --note REASON --confirm")
+		fmt.Fprintln(stderr, "Usage: discipline [--state DIR --spool DIR] serve|publish|jobs|show UUID|requests|retry UUID|cleanup UUID|new-insertion|reconcile UUID --outcome OUTCOME --note REASON --confirm")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -69,6 +73,12 @@ func run(ctx context.Context, args []string, out, stderr io.Writer) error {
 			return errors.New("unexpected serve arguments")
 		}
 		return discipline.Serve(ctx, discipline.ServiceConfig{State: *state, Spool: *spool, Drive: *drive, ABCDEConfig: os.Getenv("DISCIPLINE_ABCDE_CONFIG"), Telegram: discipline.TelegramConfig{TokenFile: *token, ChatID: *chat, Users: users}})
+	}
+	if args[0] == "publish" {
+		if len(args) != 1 {
+			return errors.New("unexpected publish arguments")
+		}
+		return discipline.Publish(ctx, discipline.PublisherConfig{State: *state, Spool: *spool, Storage: discipline.StorageConfig{Mount: *mount, Source: *source, ReadyFile: *ready}, KeepLocal: *keep})
 	}
 	var request discipline.Request
 	switch args[0] {

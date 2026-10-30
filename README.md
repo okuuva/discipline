@@ -7,8 +7,9 @@ Final library import stays manual.
 ## Development status
 
 The package now provides local job storage, extraction, authenticated Telegram artwork review and local finalization.
-NFS publication and NixOS service integration follow in dependent PRs.
-A `ready` job is finalized locally, not transferred or safe to import from the inbox.
+A separate publisher now verifies and transfers approved jobs into the classified NFS inbox.
+NixOS service integration follows in the final PR.
+A `ready` job is finalized locally; only `published` means its transfer was verified.
 Do not deploy this intermediate package as the complete ripper.
 
 See the [delivery plan](docs/plans/pr-stack.md) for the five PRs and the [functional contract](docs/plans/cd-ripping-tool.md) for safety and rollout requirements.
@@ -56,7 +57,7 @@ Commands return JSON.
 `requests` distinguishes queued requests from completed work.
 Mutating CLI commands record intent, never change a job's phase or perform filesystem cleanup themselves.
 The main service processes rip retries, finalization retries and explicit new-insertion requests.
-Publication, reconciliation and cleanup requests wait for the publisher in the next PR.
+The separate publisher processes copy retries, reconciliation and cleanup requests.
 A completed retry request means the worker accepted the retry, not that audio processing succeeded.
 Conflicting requests are rejected while an earlier request is queued.
 Workers must atomically recheck the recorded revision and their file ownership before executing a request.
@@ -161,4 +162,44 @@ Finalization tags a temporary MP3 copy, verifies its embedded image and unchange
 A failed or interrupted tag write cannot become a retry's new audio baseline.
 It writes and verifies the same approved JPEG once per album as `cover.jpg`, then freezes the complete media manifest.
 Partial finalization retains local output and the frozen approval for an explicit, repeat-safe retry.
-No later automatic fetch can replace that image, and this PR still performs no inbox writes or cleanup.
+No later automatic fetch can replace that image.
+
+## Publisher and local cleanup
+
+Run `discipline --media-source 'spikenology.localdomain:/volume2/Media' publish` as the same non-root user, separately from `serve`.
+The main service initializes empty local state first; the publisher refuses to create missing state.
+The defaults are `--media-mount /mnt/media` and `--storage-ready /run/beets-storage-ready`.
+These must describe the existing storage contract, not a local fallback directory.
+The publisher requires a regular readiness marker and the exact visible writable NFS source/target with `hard,sec=sys`.
+It pins directory descriptors, checks their kernel mount IDs, rejects nested mounts, symlinks, shared hard links and special files, and passes pinned source/destination descriptors to rsync.
+If the mount disappears or is replaced, copying cannot fall through to the uncovered local mountpoint.
+Linux `openat2` and `statx` mount IDs are required; unsupported kernels fail closed.
+
+Only the frozen `media/` tree is copied into `Music/incoming/<Owned|Loaned>/<TOC-SHA256>/` below that mount.
+The source must match the nonempty frozen manifest before destination changes.
+Rsync uses checksums, `--delete-delay` and file fsync, then discipline checks the exact destination file set/hashes and flushes files/directories before recording `published`.
+An approved rerip may replace regular files and remove stale contents only within its exact category/disc directory.
+The highest creation sequence ever approved for that destination prevents a late older approval or retry from overwriting a newer approved rip, even after the newer attempt is cleaned or abandoned.
+Older attempts become `superseded`, retain local data, and may be explicitly abandoned and cleaned.
+
+Publication is not an atomic album swap and is not acceptance into the managed library.
+Keep the importer and other writers out of that disc directory while copying or retrying.
+For a category-wide import, wait for all approved transfers in that category to complete and do not approve/retry more until the import ends.
+A failed copy leaves a partial inbox, retains local output and enters `copy-failed`; `retry` repairs that same copy without reripping.
+A crashed publisher leaves `uncertain`, including a crash after verification but before its SQLite receipt.
+Quiesce the publisher and importer, check for prior consumption or newer rips, then enqueue an audited `reconcile` decision.
+A missing inbox alone never authorizes resending.
+Completed and superseded jobs never automatically resend.
+
+The main service retries transfer-complete or not-ready Telegram notices from local state, without reading NFS.
+Automatic cleanup waits for the transfer-complete notice to succeed and removes only the published attempt, keeping its receipt.
+`--keep-local` disables automatic cleanup; explicit `cleanup UUID` still works for idle published or explicitly abandoned jobs.
+A cleanup failure retains status and requires an explicit cleanup request rather than a busy retry loop.
+An interrupted cleanup resumes from its exclusive `cleaning` claim; an already absent attempt is safe only under that claim.
+Nothing cleans the shared inbox, managed library or another local attempt.
+
+The publisher holds a local lifetime lock inherited by rsync and waits for subprocess quiescence, including cancellation.
+Hard-NFS I/O can block indefinitely; configure its service with `TimeoutStopSec=infinity` and never force a competing publisher, unmount, soft-mount retry or source cleanup to bypass it.
+Restarting `serve` cannot release the publisher's lock or requeue its unresolved copy.
+Local status, extraction and review remain independent of blocked NFS work.
+Actual NFS and power-loss behavior still require separately authorized rollout tests.
